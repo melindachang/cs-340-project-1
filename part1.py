@@ -116,17 +116,26 @@ class BasicDNSProxy(asyncio.DatagramProtocol):
                 "!4H", self.query_head[4:]
             )
             QDCOUNT, ANCOUNT, NSCOUNT, ARCOUNT = counts
-            posn, qd = self.parse_section(QDCOUNT, 0, True)
-            posn, an = self.parse_section(ANCOUNT, posn)
-            posn, ns = self.parse_section(NSCOUNT, posn)
-            posn, ar = self.parse_section(ARCOUNT, posn)
+            posn, qd = self.parse_questions(QDCOUNT, 0)
+            posn, an = self.parse_records(ANCOUNT, posn)
+            posn, ns = self.parse_records(NSCOUNT, posn)
+            posn, ar = self.parse_records(ARCOUNT, posn)
 
             with open("output.json", "w") as output:
                 data = {
                     "question": [{"name": name, "type": type} for name, type in qd],
-                    "answer": [{"name": name, "type": type} for name, type in an],
-                    "authority": [{"name": name, "type": type} for name, type in ns],
-                    "additional": [{"name": name, "type": type} for name, type in ar],
+                    "answer": [
+                        {"name": name, "type": type, "resource_size": size}
+                        for name, type, size in an
+                    ],
+                    "authority": [
+                        {"name": name, "type": type, "resource_size": size}
+                        for name, type, size in ns
+                    ],
+                    "additional": [
+                        {"name": name, "type": type, "resource_size": size}
+                        for name, type, size in ar
+                    ],
                 }
 
                 print(json.dumps(data))
@@ -137,28 +146,29 @@ class BasicDNSProxy(asyncio.DatagramProtocol):
                     indent=4,
                 )
 
-        def parse_section(
-            self,
-            num_records: int,
-            posn: int,
-            is_question: bool = False,
-        ):
-            rrs: list[tuple[str, str]] = []
-            for _ in range(num_records):
-                posn, name = self.parse_name(posn)
-                rtype: int = struct.unpack("!H", self.query_body[posn : posn + 2])[0]
-                rrs.append((name, DNS_TYPES[rtype]))
+        def parse_questions(
+            self, num_qns: int, posn: int
+        ) -> tuple[int, list[tuple[str, str]]]:
+            questions: list[tuple[str, str]] = []
+            for _ in range(num_qns):
+                posn, record_name = self.parse_name(posn)
+                posn, record_type = self.parse_type(posn)
+                questions.append((record_name, record_type))
                 posn += 2
-                if is_question:
-                    posn += 2
-                else:
-                    posn += 6
-                    data_len: int = struct.unpack(
-                        "!H", self.query_body[posn : posn + 2]
-                    )[0]
-                    posn += 2 + data_len
 
-            return (posn, rrs)
+            return posn, questions
+
+        def parse_records(self, num_records: int, posn: int):
+            records: list[tuple[str, str, int]] = []
+            for _ in range(num_records):
+                posn, record_name = self.parse_name(posn)
+                posn, record_type = self.parse_type(posn)
+                posn += 6
+                rdlength: int = struct.unpack("!H", self.query_body[posn : posn + 2])[0]
+                records.append((record_name, record_type, rdlength))
+                posn += 2 + rdlength
+
+            return posn, records
 
         def parse_name(self, posn: int) -> tuple[int, str]:
             name: list[str] = []
@@ -186,6 +196,11 @@ class BasicDNSProxy(asyncio.DatagramProtocol):
                 return (posn + 1, ".".join(name))
             else:
                 return (posn + 2, ".".join(name))
+
+        def parse_type(self, posn: int) -> tuple[int, str]:
+            record_type: int = struct.unpack("!H", self.query_body[posn : posn + 2])[0]
+            posn += 2
+            return (posn, DNS_TYPES[record_type])
 
         def is_pointer(self, bytes: int) -> bool:
             return True if (bytes >> 6) & 0b11 == 0b11 else False

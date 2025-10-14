@@ -8,34 +8,41 @@
     "answer": [
         {
             "name": "example.com",
-            "type": "A"
+            "type": "A",
+            "resource_size": 4
         },
         {
             "name": "example.com",
-            "type": "A"
+            "type": "A",
+            "resource_size": 4
         },
         {
             "name": "example.com",
-            "type": "A"
+            "type": "A",
+            "resource_size": 4
         },
         {
             "name": "example.com",
-            "type": "A"
+            "type": "A",
+            "resource_size": 4
         },
         {
             "name": "example.com",
-            "type": "A"
+            "type": "A",
+            "resource_size": 4
         },
         {
             "name": "example.com",
-            "type": "A"
+            "type": "A",
+            "resource_size": 4
         }
     ],
     "authority": [],
     "additional": [
         {
             "name": "",
-            "type": "OPT"
+            "type": "OPT",
+            "resource_size": 0
         }
     ]
 }
