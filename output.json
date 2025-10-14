@@ -1,0 +1,41 @@
+{
+    "question": [
+        {
+            "name": "example.com",
+            "type": "A"
+        }
+    ],
+    "answer": [
+        {
+            "name": "example.com",
+            "type": "A"
+        },
+        {
+            "name": "example.com",
+            "type": "A"
+        },
+        {
+            "name": "example.com",
+            "type": "A"
+        },
+        {
+            "name": "example.com",
+            "type": "A"
+        },
+        {
+            "name": "example.com",
+            "type": "A"
+        },
+        {
+            "name": "example.com",
+            "type": "A"
+        }
+    ],
+    "authority": [],
+    "additional": [
+        {
+            "name": "",
+            "type": "OPT"
+        }
+    ]
+}
