@@ -21,8 +21,6 @@ import asyncio
 import json
 import socket
 import struct
-import sys
-from turtle import up
 from typing import cast, override
 
 type Address = tuple[str, int]
