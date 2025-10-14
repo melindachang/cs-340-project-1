@@ -16,13 +16,19 @@ Requirements:
 - Log query names/types and response sizes.
 """
 
+import argparse
 import asyncio
 import json
 import socket
 import struct
+import sys
+from turtle import up
+from typing import cast, override
+
+type Address = tuple[str, int]
 
 HOST_ADDR = ("127.0.0.1", 1053)
-UPSTREAM_SERVER = ("8.8.8.8", 53)
+UPSTREAM_SERVER = "8.8.8.8"
 
 DNS_TYPES = {
     1: "A",
@@ -46,137 +52,163 @@ DNS_TYPES = {
 }
 
 
-def send(
-    data: bytes,
-    sock: socket.SocketType,
-    addr: tuple[str, int] = UPSTREAM_SERVER,
-    retries: int = 3,
-    timeout: int = 3,
-):
-    sock.settimeout(timeout)
-    while retries > 0:
-        retries -= 1
-        try:
-            _ = sock.sendto(data, addr)
-            sock.settimeout(None)
-            return
-        except socket.timeout:
-            print(f"Upstream server {addr} timed out")
-            print(f"Retries remaining: {retries}")
-            continue
+class BasicDNSProxy(asyncio.DatagramProtocol):
+    transport: asyncio.DatagramTransport | None
+    upstream_server: Address
+    debug: bool
 
+    def __init__(self, debug_flag: bool, upstream_server: str):
+        self.transport = None
+        self.upstream_server = (upstream_server, 53)
+        self.debug = debug_flag
 
-def parse_section(count: int, query_body: bytes, posn: int, is_question: bool = False):
-    rrs: list[tuple[str, str]] = []
-    for _ in range(count):
-        posn, name = parse_name(query_body, posn)
-        rtype: int = struct.unpack("!H", query_body[posn : posn + 2])[0]
-        rrs.append((name, DNS_TYPES[rtype]))
-        posn += 2
-        if is_question:
-            posn += 2
-        else:
-            posn += 6
-            data_len: int = struct.unpack("!H", query_body[posn : posn + 2])[0]
-            posn += 2 + data_len
+    @override
+    def connection_made(self, transport: asyncio.DatagramTransport) -> None:
+        self.transport = transport
+        print(f"Listening on {HOST_ADDR[0]}:{HOST_ADDR[1]}")
 
-    return (posn, rrs)
+    @override
+    def datagram_received(self, data: bytes, addr: Address) -> None:
+        _ = asyncio.create_task(self.handle_query(data, addr))
 
+    async def handle_query(self, data: bytes, addr: Address):
+        if self.debug:
+            print("Task sleeping...")
+            await asyncio.sleep(3)
 
-def is_pointer(bytes: int):
-    return True if (bytes >> 6) & 0b11 == 0b11 else False
+        loop = asyncio.get_running_loop()
+        on_response = loop.create_future()
 
+        def on_response_factory():
+            class Upstream(asyncio.DatagramProtocol):
+                @override
+                def datagram_received(self, data: bytes, addr: Address) -> None:
+                    if not on_response.done():
+                        on_response.set_result(data)
 
-def parse_name(query_body: bytes, posn: int):
-    name: list[str] = []
-    label_len = query_body[posn]
+            return Upstream()
 
-    while label_len != 0:
-        if not is_pointer(label_len):
-            label_val: bytes = struct.unpack(
-                f"{label_len}s", query_body[1 + posn : 1 + posn + label_len]
-            )[0]
-            name.append(label_val.decode())
-            posn += 1 + label_len
-            label_len = query_body[posn]
-        else:
-            ptr_offset: int = (
-                struct.unpack("!H", query_body[posn : posn + 2])[0] & 0x3FFF
-            ) - 12
-            _, ref = parse_name(query_body, ptr_offset)
-            name.append(ref)
-            break
-
-    if label_len == 0:
-        return (posn + 1, ".".join(name))
-    else:
-        return (posn + 2, ".".join(name))
-
-
-def log_reply(raw: bytes):
-    counts: tuple[int, int, int, int] = struct.unpack("!4H", raw[4:12])
-    QDCOUNT, ANCOUNT, NSCOUNT, ARCOUNT = counts
-
-    query_body = raw[12:]
-
-    posn, qd = parse_section(QDCOUNT, query_body, 0, True)
-    posn, an = parse_section(ANCOUNT, query_body, posn)
-    posn, ns = parse_section(NSCOUNT, query_body, posn)
-    posn, ar = parse_section(ARCOUNT, query_body, posn)
-
-    with open("output.json", "w") as output:
-        data = {
-            "question": [{"name": name, "type": type} for name, type in qd],
-            "answer": [{"name": name, "type": type} for name, type in an],
-            "authority": [{"name": name, "type": type} for name, type in ns],
-            "additional": [{"name": name, "type": type} for name, type in ar],
-        }
-
-        print(json.dumps(data))
-
-        json.dump(
-            data,
-            output,
-            indent=4,
+        transport, _ = await loop.create_datagram_endpoint(
+            on_response_factory, remote_addr=self.upstream_server, family=socket.AF_INET
         )
+
+        transport.sendto(data)
+
+        try:
+            response: bytes = await asyncio.wait_for(on_response, timeout=3)
+            _ = self.DNSQueryParser(response)
+            transport_ = cast(asyncio.DatagramTransport, self.transport)
+            transport_.sendto(response, addr)
+        except asyncio.TimeoutError:
+            print(f"Upstream timeout for {addr}")
+        finally:
+            transport.close()
+
+    class DNSQueryParser:
+        query_head: bytes
+        query_body: bytes
+
+        def __init__(self, query: bytes) -> None:
+            self.query_head = query[:12]
+            self.query_body = query[12:]
+            self.parse()
+
+        def parse(self) -> None:
+            counts: tuple[int, int, int, int] = struct.unpack(
+                "!4H", self.query_head[4:]
+            )
+            QDCOUNT, ANCOUNT, NSCOUNT, ARCOUNT = counts
+            posn, qd = self.parse_section(QDCOUNT, 0, True)
+            posn, an = self.parse_section(ANCOUNT, posn)
+            posn, ns = self.parse_section(NSCOUNT, posn)
+            posn, ar = self.parse_section(ARCOUNT, posn)
+
+            with open("output.json", "w") as output:
+                data = {
+                    "question": [{"name": name, "type": type} for name, type in qd],
+                    "answer": [{"name": name, "type": type} for name, type in an],
+                    "authority": [{"name": name, "type": type} for name, type in ns],
+                    "additional": [{"name": name, "type": type} for name, type in ar],
+                }
+
+                print(json.dumps(data))
+
+                json.dump(
+                    data,
+                    output,
+                    indent=4,
+                )
+
+        def parse_section(
+            self,
+            num_records: int,
+            posn: int,
+            is_question: bool = False,
+        ):
+            rrs: list[tuple[str, str]] = []
+            for _ in range(num_records):
+                posn, name = self.parse_name(posn)
+                rtype: int = struct.unpack("!H", self.query_body[posn : posn + 2])[0]
+                rrs.append((name, DNS_TYPES[rtype]))
+                posn += 2
+                if is_question:
+                    posn += 2
+                else:
+                    posn += 6
+                    data_len: int = struct.unpack(
+                        "!H", self.query_body[posn : posn + 2]
+                    )[0]
+                    posn += 2 + data_len
+
+            return (posn, rrs)
+
+        def parse_name(self, posn: int) -> tuple[int, str]:
+            name: list[str] = []
+            label_len = self.query_body[posn]
+
+            while label_len != 0:
+                if not self.is_pointer(label_len):
+                    label_val: bytes = struct.unpack(
+                        f"{label_len}s",
+                        self.query_body[1 + posn : 1 + posn + label_len],
+                    )[0]
+                    name.append(label_val.decode())
+                    posn += 1 + label_len
+                    label_len = self.query_body[posn]
+                else:
+                    ptr_offset: int = (
+                        struct.unpack("!H", self.query_body[posn : posn + 2])[0]
+                        & 0x3FFF
+                    ) - 12
+                    _, ref = self.parse_name(ptr_offset)
+                    name.append(ref)
+                    break
+
+            if label_len == 0:
+                return (posn + 1, ".".join(name))
+            else:
+                return (posn + 2, ".".join(name))
+
+        def is_pointer(self, bytes: int) -> bool:
+            return True if (bytes >> 6) & 0b11 == 0b11 else False
 
 
 async def main():
-    with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as recv_sock:
-        recv_sock.bind(HOST_ADDR)
-        recv_sock.setblocking(False)
+    parser = argparse.ArgumentParser()
+    _ = parser.add_argument("--upstream", type=str, default=UPSTREAM_SERVER)
+    _ = parser.add_argument("--debug", action="store_true")
+    args = parser.parse_args()
 
-        try:
-            while True:
-                print("lol")
-        except KeyboardInterrupt:
-            recv_sock.close
+    loop = asyncio.get_running_loop()
+    transport, _ = await loop.create_datagram_endpoint(
+        lambda: BasicDNSProxy(args.debug, args.upstream), local_addr=HOST_ADDR
+    )
+
+    try:
+        await asyncio.Future()
+    finally:
+        transport.close()
 
 
-# with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as recv_sock:
-#     recv_sock.bind(HOST_ADDR)
-#     recv_sock.setblocking(False)
-#
-#     try:
-#         while True:
-#             readable, _, _ = select.select(
-#                 [recv_sock],
-#                 [],
-#                 [],
-#             )
-#             if recv_sock in readable:
-#                 try:
-#                     (data, addr) = recv_sock.recvfrom(1024)
-#
-#                     with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as send_sock:
-#                         send(data, send_sock)
-#                         response, _ = send_sock.recvfrom(1024)
-#                         if not response:
-#                             break
-#
-#                         log_reply(response)
-#                         send(response, recv_sock, addr)
-#                 except BlockingIOError:
-#                     pass
-#     except KeyboardInterrupt:
-#         recv_sock.close
+if __name__ == "__main__":
+    asyncio.run(main())
