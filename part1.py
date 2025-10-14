@@ -19,6 +19,7 @@ Requirements:
 import argparse
 import asyncio
 import json
+import signal
 import socket
 import struct
 from typing import cast, override
@@ -94,7 +95,10 @@ class BasicDNSProxy(asyncio.DatagramProtocol):
 
         try:
             response: bytes = await asyncio.wait_for(on_response, timeout=3)
-            _ = self.DNSQueryParser(response)
+
+            parsed = self.DNSQueryParser(response)
+            print(parsed)
+
             transport_ = cast(asyncio.DatagramTransport, self.transport)
             transport_.sendto(response, addr)
         except asyncio.TimeoutError:
@@ -106,12 +110,62 @@ class BasicDNSProxy(asyncio.DatagramProtocol):
         query_head: bytes
         query_body: bytes
 
+        qd_records: list[tuple[str, str]]
+        an_records: list[tuple[str, str, int]]
+        ns_records: list[tuple[str, str, int]]
+        ar_records: list[tuple[str, str, int]]
+
         def __init__(self, query: bytes) -> None:
             self.query_head = query[:12]
             self.query_body = query[12:]
-            self.parse()
+            qd, an, ns, ar = self.parse()
 
-        def parse(self) -> None:
+            self.qd_records = qd
+            self.an_records = an
+            self.ns_records = ns
+            self.ar_records = ar
+
+            self.write_to_file()
+
+        @override
+        def __str__(self) -> str:
+            sections = [
+                (
+                    "Questions",
+                    self.qd_records,
+                ),
+                (
+                    "Answer RRs",
+                    self.an_records,
+                ),
+                (
+                    "Authority RRs",
+                    self.ns_records,
+                ),
+                (
+                    "Additional RRs",
+                    self.ar_records,
+                ),
+            ]
+
+            lines = ["\n=START==============="]
+
+            for section, records in sections:
+                lines.append(f"{section} ({len(records)}):")
+
+                if not len(records):
+                    lines.append("  (none)")
+
+                for record in records:
+                    line = f"  - Name: {record[0]}, Type: {record[1]}"
+                    if len(record) == 3:
+                        line += f" ({record[2]} bytes)"
+                    lines.append(line)
+
+            lines.append("==============END=\n")
+            return "\n".join(lines)
+
+        def parse(self):
             counts: tuple[int, int, int, int] = struct.unpack(
                 "!4H", self.query_head[4:]
             )
@@ -121,30 +175,7 @@ class BasicDNSProxy(asyncio.DatagramProtocol):
             posn, ns = self.parse_records(NSCOUNT, posn)
             posn, ar = self.parse_records(ARCOUNT, posn)
 
-            with open("output.json", "w") as output:
-                data = {
-                    "question": [{"name": name, "type": type} for name, type in qd],
-                    "answer": [
-                        {"name": name, "type": type, "resource_size": size}
-                        for name, type, size in an
-                    ],
-                    "authority": [
-                        {"name": name, "type": type, "resource_size": size}
-                        for name, type, size in ns
-                    ],
-                    "additional": [
-                        {"name": name, "type": type, "resource_size": size}
-                        for name, type, size in ar
-                    ],
-                }
-
-                print(json.dumps(data))
-
-                json.dump(
-                    data,
-                    output,
-                    indent=4,
-                )
+            return (qd, an, ns, ar)
 
         def parse_questions(
             self, num_qns: int, posn: int
@@ -205,6 +236,32 @@ class BasicDNSProxy(asyncio.DatagramProtocol):
         def is_pointer(self, bytes: int) -> bool:
             return True if (bytes >> 6) & 0b11 == 0b11 else False
 
+        def write_to_file(self) -> None:
+            with open("output.json", "w") as output:
+                data = {
+                    "question": [
+                        {"name": name, "type": type} for name, type in self.qd_records
+                    ],
+                    "answer": [
+                        {"name": name, "type": type, "resource_size": size}
+                        for name, type, size in self.an_records
+                    ],
+                    "authority": [
+                        {"name": name, "type": type, "resource_size": size}
+                        for name, type, size in self.ns_records
+                    ],
+                    "additional": [
+                        {"name": name, "type": type, "resource_size": size}
+                        for name, type, size in self.ar_records
+                    ],
+                }
+
+                json.dump(
+                    data,
+                    output,
+                    indent=4,
+                )
+
 
 async def main():
     parser = argparse.ArgumentParser()
@@ -213,14 +270,24 @@ async def main():
     args = parser.parse_args()
 
     loop = asyncio.get_running_loop()
+    stop_event = asyncio.Event()
+
+    loop.add_signal_handler(signal.SIGINT, stop_event.set)
+
     transport, _ = await loop.create_datagram_endpoint(
         lambda: BasicDNSProxy(args.debug, args.upstream), local_addr=HOST_ADDR
     )
 
     try:
-        await asyncio.Future()
+        _ = await stop_event.wait()
     finally:
         transport.close()
+
+    pending = [t for t in asyncio.all_tasks() if t is not asyncio.current_task()]
+    for task in pending:
+        _ = task.cancel()
+    _ = await asyncio.gather(*pending, return_exceptions=True)
+    print("\nShutting down...")
 
 
 if __name__ == "__main__":
