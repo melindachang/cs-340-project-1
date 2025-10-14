@@ -16,14 +16,12 @@ Requirements:
 - Log query names/types and response sizes.
 """
 
+import asyncio
 import json
-import select
 import socket
 import struct
-import time
 
-HOST = "127.0.0.1"
-PORT = 1053
+HOST_ADDR = ("127.0.0.1", 1053)
 UPSTREAM_SERVER = ("8.8.8.8", 53)
 
 DNS_TYPES = {
@@ -48,12 +46,18 @@ DNS_TYPES = {
 }
 
 
-def send(data, sock, addr=UPSTREAM_SERVER, retries=3, timeout=3):
+def send(
+    data: bytes,
+    sock: socket.SocketType,
+    addr: tuple[str, int] = UPSTREAM_SERVER,
+    retries: int = 3,
+    timeout: int = 3,
+):
     sock.settimeout(timeout)
     while retries > 0:
         retries -= 1
         try:
-            sock.sendto(data, addr)
+            _ = sock.sendto(data, addr)
             sock.settimeout(None)
             return
         except socket.timeout:
@@ -62,41 +66,41 @@ def send(data, sock, addr=UPSTREAM_SERVER, retries=3, timeout=3):
             continue
 
 
-def parse_section(count, query_body, posn, is_question=False):
-    rrs = []
+def parse_section(count: int, query_body: bytes, posn: int, is_question: bool = False):
+    rrs: list[tuple[str, str]] = []
     for _ in range(count):
         posn, name = parse_name(query_body, posn)
-        rtype = struct.unpack("!H", query_body[posn : posn + 2])[0]
+        rtype: int = struct.unpack("!H", query_body[posn : posn + 2])[0]
         rrs.append((name, DNS_TYPES[rtype]))
         posn += 2
         if is_question:
             posn += 2
         else:
             posn += 6
-            data_len = struct.unpack("!H", query_body[posn : posn + 2])[0]
+            data_len: int = struct.unpack("!H", query_body[posn : posn + 2])[0]
             posn += 2 + data_len
 
     return (posn, rrs)
 
 
-def is_pointer(bytes):
+def is_pointer(bytes: int):
     return True if (bytes >> 6) & 0b11 == 0b11 else False
 
 
-def parse_name(query_body, posn):
-    name = []
+def parse_name(query_body: bytes, posn: int):
+    name: list[str] = []
     label_len = query_body[posn]
 
     while label_len != 0:
         if not is_pointer(label_len):
-            label_val = struct.unpack(
+            label_val: bytes = struct.unpack(
                 f"{label_len}s", query_body[1 + posn : 1 + posn + label_len]
             )[0]
             name.append(label_val.decode())
             posn += 1 + label_len
             label_len = query_body[posn]
         else:
-            ptr_offset = (
+            ptr_offset: int = (
                 struct.unpack("!H", query_body[posn : posn + 2])[0] & 0x3FFF
             ) - 12
             _, ref = parse_name(query_body, ptr_offset)
@@ -109,8 +113,9 @@ def parse_name(query_body, posn):
         return (posn + 2, ".".join(name))
 
 
-def log_reply(raw):
-    QDCOUNT, ANCOUNT, NSCOUNT, ARCOUNT = struct.unpack("!4H", raw[4:12])
+def log_reply(raw: bytes):
+    counts: tuple[int, int, int, int] = struct.unpack("!4H", raw[4:12])
+    QDCOUNT, ANCOUNT, NSCOUNT, ARCOUNT = counts
 
     query_body = raw[12:]
 
@@ -136,30 +141,42 @@ def log_reply(raw):
         )
 
 
-with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as recv_sock:
-    recv_sock.bind((HOST, PORT))
-    recv_sock.setblocking(0)
+async def main():
+    with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as recv_sock:
+        recv_sock.bind(HOST_ADDR)
+        recv_sock.setblocking(False)
 
-    try:
-        while True:
-            readable, _, _ = select.select(
-                [recv_sock],
-                [],
-                [],
-            )
-            if recv_sock in readable:
-                try:
-                    (data, addr) = recv_sock.recvfrom(1024)
+        try:
+            while True:
+                print("lol")
+        except KeyboardInterrupt:
+            recv_sock.close
 
-                    with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as send_sock:
-                        send(data, send_sock)
-                        response, _ = send_sock.recvfrom(1024)
-                        if not response:
-                            break
 
-                        log_reply(response)
-                        send(response, recv_sock, addr)
-                except BlockingIOError:
-                    pass
-    except KeyboardInterrupt:
-        recv_sock.close
+# with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as recv_sock:
+#     recv_sock.bind(HOST_ADDR)
+#     recv_sock.setblocking(False)
+#
+#     try:
+#         while True:
+#             readable, _, _ = select.select(
+#                 [recv_sock],
+#                 [],
+#                 [],
+#             )
+#             if recv_sock in readable:
+#                 try:
+#                     (data, addr) = recv_sock.recvfrom(1024)
+#
+#                     with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as send_sock:
+#                         send(data, send_sock)
+#                         response, _ = send_sock.recvfrom(1024)
+#                         if not response:
+#                             break
+#
+#                         log_reply(response)
+#                         send(response, recv_sock, addr)
+#                 except BlockingIOError:
+#                     pass
+#     except KeyboardInterrupt:
+#         recv_sock.close
