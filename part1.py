@@ -75,36 +75,45 @@ class BasicDNSProxy(asyncio.DatagramProtocol):
             print("Task sleeping...")
             await asyncio.sleep(3)
 
+        transport: asyncio.DatagramTransport | None = None
+
         loop = asyncio.get_running_loop()
-        on_response = loop.create_future()
 
-        def on_response_factory():
-            class Upstream(asyncio.DatagramProtocol):
-                @override
-                def datagram_received(self, data: bytes, addr: Address) -> None:
-                    if not on_response.done():
-                        on_response.set_result(data)
+        for attempt in range(3):
+            try:
+                on_response = loop.create_future()
 
-            return Upstream()
+                def on_response_factory():
+                    class Upstream(asyncio.DatagramProtocol):
+                        @override
+                        def datagram_received(self, data: bytes, addr: Address) -> None:
+                            if not on_response.done():
+                                on_response.set_result(data)
 
-        transport, _ = await loop.create_datagram_endpoint(
-            on_response_factory, remote_addr=self.upstream_server, family=socket.AF_INET
-        )
+                    return Upstream()
 
-        transport.sendto(data)
+                transport, _ = await loop.create_datagram_endpoint(
+                    on_response_factory,
+                    remote_addr=self.upstream_server,
+                    family=socket.AF_INET,
+                )
 
-        try:
-            response: bytes = await asyncio.wait_for(on_response, timeout=3)
+                transport.sendto(data)
 
-            parsed = self.DNSQueryParser(response)
-            print(parsed)
+                response: bytes = await asyncio.wait_for(on_response, timeout=3)
 
-            transport_ = cast(asyncio.DatagramTransport, self.transport)
-            transport_.sendto(response, addr)
-        except asyncio.TimeoutError:
-            print(f"Upstream timeout for {addr}")
-        finally:
-            transport.close()
+                parsed = self.DNSQueryParser(response)
+                print(parsed)
+
+                transport_ = cast(asyncio.DatagramTransport, self.transport)
+                transport_.sendto(response, addr)
+                break
+            except asyncio.TimeoutError:
+                print(f"Upstream timeout for {addr}, attempt {attempt + 1}")
+                print(f"Retries remaining: {2 - attempt}")
+            finally:
+                if transport:
+                    transport.close()
 
     class DNSQueryParser:
         query_head: bytes
