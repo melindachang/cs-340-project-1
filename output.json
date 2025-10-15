@@ -1,21 +1,21 @@
 {
     "question": [
         {
-            "name": "www.example.com",
-            "type": "CNAME"
+            "name": "example.com.",
+            "type": "MX"
         }
     ],
     "answer": [
         {
-            "name": "www.example.com",
-            "type": "CNAME",
-            "resource_size": 34
+            "name": "example.com.",
+            "type": "MX",
+            "resource_size": 3
         }
     ],
     "authority": [],
     "additional": [
         {
-            "name": "",
+            "name": ".",
             "type": "OPT",
             "resource_size": 0
         }

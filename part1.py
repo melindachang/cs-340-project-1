@@ -22,6 +22,7 @@ import json
 import signal
 import socket
 import struct
+from cProfile import label
 from typing import cast, override
 
 type Address = tuple[str, int]
@@ -81,7 +82,7 @@ class BasicDNSProxy(asyncio.DatagramProtocol):
 
         for attempt in range(3):
             try:
-                on_response = loop.create_future()
+                on_response: asyncio.Future[bytes] = loop.create_future()
 
                 def on_response_factory():
                     class Upstream(asyncio.DatagramProtocol):
@@ -100,7 +101,7 @@ class BasicDNSProxy(asyncio.DatagramProtocol):
 
                 transport.sendto(data)
 
-                response: bytes = await asyncio.wait_for(on_response, timeout=3)
+                response = await asyncio.wait_for(on_response, timeout=3)
 
                 parsed = self.DNSQueryParser(response)
                 print(parsed)
@@ -204,7 +205,8 @@ class BasicDNSProxy(asyncio.DatagramProtocol):
                 posn, record_name = self.parse_name(posn)
                 posn, record_type = self.parse_type(posn)
                 posn += 6
-                rdlength: int = struct.unpack("!H", self.query_body[posn : posn + 2])[0]
+                rdlength = struct.unpack("!H", self.query_body[posn : posn + 2])[0]
+                assert isinstance(rdlength, int)
                 records.append((record_name, record_type, rdlength))
                 posn += 2 + rdlength
 
@@ -216,18 +218,20 @@ class BasicDNSProxy(asyncio.DatagramProtocol):
 
             while label_len != 0:
                 if not self.is_pointer(label_len):
-                    label_val: bytes = struct.unpack(
+                    label_val = struct.unpack(
                         f"{label_len}s",
                         self.query_body[1 + posn : 1 + posn + label_len],
                     )[0]
+                    assert isinstance(label_val, bytes)
                     name.append(label_val.decode())
                     posn += 1 + label_len
                     label_len = self.query_body[posn]
                 else:
-                    ptr_offset: int = (
+                    ptr_offset = (
                         struct.unpack("!H", self.query_body[posn : posn + 2])[0]
                         & 0x3FFF
                     ) - 12
+                    assert isinstance(ptr_offset, int)
                     _, ref = self.parse_name(ptr_offset)
                     name.append(ref)
                     break
@@ -238,7 +242,8 @@ class BasicDNSProxy(asyncio.DatagramProtocol):
                 return (posn + 2, ".".join(name))
 
         def parse_type(self, posn: int) -> tuple[int, str]:
-            record_type: int = struct.unpack("!H", self.query_body[posn : posn + 2])[0]
+            record_type = struct.unpack("!H", self.query_body[posn : posn + 2])[0]
+            assert isinstance(record_type, int)
             posn += 2
             return (posn, DNS_TYPES[record_type])
 

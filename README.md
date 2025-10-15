@@ -110,3 +110,17 @@ All functionality from part 1 remains, but parsing is now handled by
    contents of its answer, authority, and additional RR sections are embedded
    in a new `Message` object that copies over most of the header of the initial
    query. This message is then sent off to the original host.
+
+## Part 3
+
+### Usage
+
+See `part3.log` for logging info from the most recent script run.
+
+### Design Description
+
+The same program as in part 2, except:
+- `BasicDNSProxy` now stores its own persistent `requests.Session` object,
+  which is instantiated upon the first call to `datagram_received`.
+- `handle_doh_query` now uses `logging.Logger` to broadcast how much time
+  elapses between the start and end of each task
