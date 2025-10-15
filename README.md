@@ -6,13 +6,16 @@ Melinda Chang (yus8813)
 
 ### Usage
 
+Activate your virtual environment and install dependencies:
+```
+python -m venv .venv
+source .venv/bin/activate
+pip install -r requirements.txt
+```
+
 Run the following:
 
 ``` python part1.py [--upstream=address] [--debug] ```
-
-Use `dig` to perform a DNS lookup via `localhost:1053`:
-
-``` dig @127.0.0.1 -p 1053 example.com A ```
 
 Example output:
 ```
