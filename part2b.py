@@ -1,24 +1,27 @@
 #!/usr/bin/env python3
 
 """
-##### PART 3: PERSISTENT DOH SESSION #####
+##### PART 2B: DNS OVER HTTPS (DOH) WRAPPER, WITH RFC 8484 #####
 
-Modify your DoH proxy to maintain a persistent HTTPS session using
-`requests.Session()`. Measure and log query times across multiple requests.
+Extend your proxy to support DNS over HTTPS. Convert incoming DNS-over-UDP
+queries into HTTPS requests and return DNS responses.
 
 Requirements:
-- Reuse the same session for multiple queries.
-- Log end-to-end latency for each request (from receipt to response).
-- Show how persistent sessions affect query time (first vs later queries).
+- Use the requests library. Optionally use dnslib or dnspython for packet
+  parsing/building.
+- Support at least A and CNAME queries.
+- Return valid DNS UDP responses (preserve IDs, flags, and questions).
+- Default to Google’s JSON DoH API (https://dns.google/resolve). RFC 8484
+  binary DoH is optional extra credit.
 """
 
 import argparse
 import asyncio
+import base64
 import json
-import logging
 import signal
 import socket
-import time
+from mimetypes import init
 from typing import cast, override
 
 import dns.message
@@ -29,7 +32,7 @@ type Address = tuple[str, int]
 
 HOST_ADDR = ("127.0.0.1", 1053)
 UPSTREAM_SERVER = "8.8.8.8"
-UPSTREAM_SERVER_DOH = "https://dns.google/resolve?"
+UPSTREAM_SERVER_DOH = "https://dns.google/dns-query"
 
 DNS_TYPES = {
     1: "A",
@@ -52,22 +55,17 @@ DNS_TYPES = {
     255: "ANY",
 }
 
-logger = logging.getLogger(__name__)
-
 
 class BasicDNSProxy(asyncio.DatagramProtocol):
     transport: asyncio.DatagramTransport | None
-    session: requests.Session | None
-
     upstream_server: Address
     debug: bool
     doh: bool
 
     def __init__(self, debug_flag: bool, upstream_server: str, doh_flag: bool):
         self.transport = None
-        self.session = None
-
         self.upstream_server = (upstream_server, 80 if doh_flag else 53)
+
         self.debug = debug_flag
         self.doh = doh_flag
 
@@ -78,48 +76,40 @@ class BasicDNSProxy(asyncio.DatagramProtocol):
 
     @override
     def datagram_received(self, data: bytes, addr: Address) -> None:
-        if not self.session:
-            self.session = requests.Session()
-
         if self.doh:
             _ = asyncio.create_task(self.handle_doh_query(data, addr))
         else:
             _ = asyncio.create_task(self.handle_query(data, addr))
 
     async def handle_doh_query(self, data: bytes, addr: Address) -> None:
-        id = dns.message.from_wire(data).id
-        start = time.time_ns()
-        logger.info(f"Task started (ID{id})")
-
         if self.debug:
             print("Task sleeping...")
             await asyncio.sleep(3)
 
-        params_lst = self.make_query_params(data)
+        init_msg = dns.message.from_wire(data)
+        init_msg.id = 0
+        encoded_msg = base64.urlsafe_b64encode(init_msg.to_wire()).rstrip(b"=")
+        params = {"dns": encoded_msg}
+        headers = {"accept": "application/dns-message"}
 
         for attempt in range(3):
             try:
-                session_ = cast(requests.Session, self.session)
+                response = await asyncio.to_thread(
+                    requests.get,
+                    self.upstream_server[0],
+                    params,
+                    headers=headers,
+                    timeout=3,
+                )
 
-                tasks = [
-                    asyncio.to_thread(
-                        session_.get, self.upstream_server[0], params=params, timeout=3
-                    )
-                    for params in params_lst
-                ]
-
-                responses = await asyncio.gather(*tasks)
                 transport_ = cast(asyncio.DatagramTransport, self.transport)
 
-                for r in responses:
-                    parsed = self.DNSQueryParser(r.content)
-                    print(parsed)
+                parsed = self.DNSQueryParser(response.content)
+                print(parsed)
 
-                    reply_msg = parsed.build_dns_reply(data)
-                    transport_.sendto(reply_msg.to_wire(), addr)
+                reply_msg = parsed.build_dns_reply(data)
+                transport_.sendto(reply_msg.to_wire(), addr)
 
-                end = time.time_ns()
-                logger.info(f"ID{id} time elapsed: {(end - start) / 1_000_000}ms")
                 break
             except asyncio.TimeoutError or requests.exceptions.Timeout:
                 print(f"Upstream timeout for {addr}, attempt {attempt + 1}")
@@ -129,18 +119,6 @@ class BasicDNSProxy(asyncio.DatagramProtocol):
                 print(f"Retries remaining: {2 - attempt}")
                 if attempt < 2:
                     await asyncio.sleep(1)
-
-    def make_query_params(self, data: bytes):
-        params_lst: list[dict[str, str]] = []
-        questions = dns.message.from_wire(data).question
-        for q in questions:
-            name = q.name.to_unicode()
-            type = DNS_TYPES[q.rdtype]
-            params_lst.append(
-                {"name": name, "type": type, "ct": "application/dns-message"}
-            )
-
-        return params_lst
 
     async def handle_query(self, data: bytes, addr: Address) -> None:
         if self.debug:
@@ -291,8 +269,6 @@ class BasicDNSProxy(asyncio.DatagramProtocol):
 
 
 async def main():
-    logging.basicConfig(filename="part3.log", filemode="w", level=logging.INFO)
-
     parser = argparse.ArgumentParser()
     _ = parser.add_argument("--upstream", type=str, default=UPSTREAM_SERVER)
     _ = parser.add_argument("--debug", action="store_true")
@@ -319,8 +295,6 @@ async def main():
     try:
         _ = await stop_event.wait()
     finally:
-        if proxy.session:
-            proxy.session.close()
         transport.close()
 
     pending = [t for t in asyncio.all_tasks() if t is not asyncio.current_task()]

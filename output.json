@@ -2,14 +2,39 @@
     "question": [
         {
             "name": "example.com.",
-            "type": "MX"
+            "type": "AAAA"
         }
     ],
     "answer": [
         {
             "name": "example.com.",
-            "type": "MX",
-            "resource_size": 3
+            "type": "AAAA",
+            "resource_size": 16
+        },
+        {
+            "name": "example.com.",
+            "type": "AAAA",
+            "resource_size": 16
+        },
+        {
+            "name": "example.com.",
+            "type": "AAAA",
+            "resource_size": 16
+        },
+        {
+            "name": "example.com.",
+            "type": "AAAA",
+            "resource_size": 16
+        },
+        {
+            "name": "example.com.",
+            "type": "AAAA",
+            "resource_size": 16
+        },
+        {
+            "name": "example.com.",
+            "type": "AAAA",
+            "resource_size": 16
         }
     ],
     "authority": [],

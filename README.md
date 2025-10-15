@@ -111,6 +111,16 @@ All functionality from part 1 remains, but parsing is now handled by
    in a new `Message` object that copies over most of the header of the initial
    query. This message is then sent off to the original host.
 
+## Part 2(b)
+
+### Design Description
+
+The same program as in part 2, except:
+- `handle_doh_query` now encodes the entire contents of the received datagram
+  in Base64URL and appends it to the URI of the request
+- Forwarded request has an ID of 0 for caching considerations (actual ID is
+  restored upon relaying reply back to requestee).
+
 ## Part 3
 
 ### Usage
