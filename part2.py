@@ -20,7 +20,6 @@ import asyncio
 import json
 import signal
 import socket
-import struct
 from typing import cast, override
 
 import dns.message
@@ -89,11 +88,16 @@ class BasicDNSProxy(asyncio.DatagramProtocol):
 
         for attempt in range(3):
             try:
-                responses = await asyncio.gather(
-                    *[
-                        asyncio.to_thread(requests.get, self.upstream_server[0], params)
-                        for params in params_lst
-                    ]
+                responses = await asyncio.wait_for(
+                    asyncio.gather(
+                        *[
+                            asyncio.to_thread(
+                                requests.get, self.upstream_server[0], params
+                            )
+                            for params in params_lst
+                        ]
+                    ),
+                    timeout=3,
                 )
 
                 transport_ = cast(asyncio.DatagramTransport, self.transport)
@@ -121,6 +125,11 @@ class BasicDNSProxy(asyncio.DatagramProtocol):
             except asyncio.TimeoutError:
                 print(f"Upstream timeout for {addr}, attempt {attempt + 1}")
                 print(f"Retries remaining: {2 - attempt}")
+            except requests.exceptions.ConnectionError:
+                print(f"Upstream refused connection for {addr}, attempt {attempt + 1}")
+                print(f"Retries remaining: {2 - attempt}")
+                if attempt < 2:
+                    await asyncio.sleep(1)
 
     def make_query_params(self, data: bytes):
         params_lst: list[dict[str, str]] = []
@@ -133,10 +142,6 @@ class BasicDNSProxy(asyncio.DatagramProtocol):
             )
 
         return params_lst
-
-    def preserve_header(self, data: bytes):
-        message = dns.message.from_wire(data)
-        return (message.id, message.flags)
 
     async def handle_query(self, data: bytes, addr: Address) -> None:
         if self.debug:
