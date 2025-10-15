@@ -122,7 +122,7 @@ class BasicDNSProxy(asyncio.DatagramProtocol):
                     transport_.sendto(reply_msg.to_wire(), addr)
 
                 break
-            except asyncio.TimeoutError:
+            except asyncio.TimeoutError or requests.exceptions.Timeout:
                 print(f"Upstream timeout for {addr}, attempt {attempt + 1}")
                 print(f"Retries remaining: {2 - attempt}")
             except requests.exceptions.ConnectionError:
