@@ -77,3 +77,33 @@ Other notes:
   `asycio.sleep()`...) to execute other tasks concurrently
 - In `main()`, a try...finally statement with a `stop_event` listener prevents
   errors from being thrown by `SIGINT` (CTRL+C).
+
+## Part 2
+
+### Usage
+
+Run the following:
+
+``` python part2.py [--upstream=address] [--debug] [--doh] ```
+
+#### Options
+- `--doh`: Transmit upstream over HTTPS instead of UDP
+- `--upstream`: Change upstream address to which DNS requests will be forwarded
+  (default: `8.8.8.8`; if `--doh`, default: `https://dns.google/resolve?`)
+- `--debug`: Test async I/O unblocking; stalls every new task by 3 seconds
+
+### Design Description
+
+All functionality from part 1 remains, but parsing is now handled by
+`dnspython`. Tracing where the new proxy diverges from the old one:
+
+1. Upon `datagram_received` callback: if `--doh` argument was provided, passes
+   data into the coroutine `handle_doh_query`.
+2. `requests` library functions are all synchronous, so control is handed to
+   the event loop by making a new `asyncio` thread for it. Proxy extracts the
+   question entry from the received data and supplies it as a parameter for an
+   HTTPS GET request to the upstream endpoint.
+3. The HTTPS response that eventuates is parsed into a DNS message, and the
+   contents of its answer, authority, and additional RR sections are embedded
+   in a new `Message` object that copies over most of the header of the initial
+   query. This message is then sent off to the original host.

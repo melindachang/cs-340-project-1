@@ -1,46 +1,21 @@
 {
     "question": [
         {
-            "name": "example.com",
-            "type": "A"
+            "name": "www.example.com.",
+            "type": "CNAME"
         }
     ],
     "answer": [
         {
-            "name": "example.com",
-            "type": "A",
-            "resource_size": 4
-        },
-        {
-            "name": "example.com",
-            "type": "A",
-            "resource_size": 4
-        },
-        {
-            "name": "example.com",
-            "type": "A",
-            "resource_size": 4
-        },
-        {
-            "name": "example.com",
-            "type": "A",
-            "resource_size": 4
-        },
-        {
-            "name": "example.com",
-            "type": "A",
-            "resource_size": 4
-        },
-        {
-            "name": "example.com",
-            "type": "A",
-            "resource_size": 4
+            "name": "www.example.com.",
+            "type": "CNAME",
+            "resource_size": 34
         }
     ],
     "authority": [],
     "additional": [
         {
-            "name": "",
+            "name": ".",
             "type": "OPT",
             "resource_size": 0
         }
