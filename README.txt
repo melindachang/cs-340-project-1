@@ -2,16 +2,26 @@
 
 Melinda Chang (yus8813)
 
-## Part 1
+## Instructions
 
-### Usage
+Clone repository:
+
+```
+git clone https://github.com/melindachang/cs-340-project-1.git
+cd cs340-project-1
+```
 
 Activate your virtual environment and install dependencies:
+
 ```
 python -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt
 ```
+
+## Part 1
+
+### Usage
 
 Run the following:
 
