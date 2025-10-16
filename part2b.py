@@ -19,9 +19,10 @@ import argparse
 import asyncio
 import base64
 import json
+import logging
 import signal
 import socket
-from mimetypes import init
+import time
 from typing import cast, override
 
 import dns.message
@@ -55,6 +56,8 @@ DNS_TYPES = {
     255: "ANY",
 }
 
+logger = logging.getLogger(__name__)
+
 
 class BasicDNSProxy(asyncio.DatagramProtocol):
     transport: asyncio.DatagramTransport | None
@@ -82,34 +85,43 @@ class BasicDNSProxy(asyncio.DatagramProtocol):
             _ = asyncio.create_task(self.handle_query(data, addr))
 
     async def handle_doh_query(self, data: bytes, addr: Address) -> None:
+        """
+        Coroutine for DoH (RFC 8484) queries.
+        """
+        init_msg = dns.message.from_wire(data)
+        id = init_msg.id
+        question = parse_dns_section(init_msg.question)[0]
+        logger.info(f"(ID{id}) QUERY [ Name: {question[0]}, Type: {question[1]} ]")
+
+        start = time.time_ns()
+        logger.info(f"(ID{id}) START Timer")
+
         if self.debug:
             print("Task sleeping...")
             await asyncio.sleep(3)
 
-        init_msg = dns.message.from_wire(data)
         init_msg.id = 0
         encoded_msg = base64.urlsafe_b64encode(init_msg.to_wire()).rstrip(b"=")
-        params = {"dns": encoded_msg}
-        headers = {"accept": "application/dns-message"}
-
         for attempt in range(3):
             try:
                 response = await asyncio.to_thread(
                     requests.get,
                     self.upstream_server[0],
-                    params,
-                    headers=headers,
-                    timeout=3,
+                    {"dns": encoded_msg},
+                    headers={"accept": "application/dns-message"},
                 )
-
-                transport_ = cast(asyncio.DatagramTransport, self.transport)
 
                 parsed = self.DNSQueryParser(response.content)
                 print(parsed)
 
-                reply_msg = parsed.build_dns_reply(data)
+                init_msg.id = id
+                reply_msg = parsed.build_dns_reply(init_msg)
+
+                transport_ = cast(asyncio.DatagramTransport, self.transport)
                 transport_.sendto(reply_msg.to_wire(), addr)
 
+                end = time.time_ns()
+                logger.info(f"(ID{id}) END Time elapsed: {(end - start) / 1_000_000}ms")
                 break
             except asyncio.TimeoutError or requests.exceptions.Timeout:
                 print(f"Upstream timeout for {addr}, attempt {attempt + 1}")
@@ -191,9 +203,9 @@ class BasicDNSProxy(asyncio.DatagramProtocol):
                 if not section_count:
                     lines.append("  (none)")
                 else:
-                    records = self.parse_section(rrsets)
+                    records = parse_dns_section(rrsets)
                     if not records and self.query.opt:
-                        records = self.parse_section([self.query.opt])
+                        records = parse_dns_section([self.query.opt])
 
                     for name, type, rlength in records:
                         line = f"  - Name: {name}, Type: {type}"
@@ -204,29 +216,9 @@ class BasicDNSProxy(asyncio.DatagramProtocol):
             lines.append("==============END=\n")
             return "\n".join(lines)
 
-        def parse_section(
-            self, rrsets: list[RRset]
-        ) -> list[tuple[str, str, int | None]]:
-            records: list[tuple[str, str, int | None]] = []
-            for rrset in rrsets:
-                name = rrset.name.to_unicode()
-                type = DNS_TYPES[rrset.rdtype]
-
-                if not rrset.processing_order():
-                    records.append((name, type, None))
-                else:
-                    for rdata in rrset.processing_order():
-                        bytes = rdata.to_wire()
-                        rlength = len(bytes) if bytes else 0
-                        records.append((name, type, rlength))
-
-            return records
-
-        def build_dns_reply(self, init_data: bytes) -> dns.message.Message:
-            init_message = dns.message.from_wire(init_data)
-
+        def build_dns_reply(self, init_msg: dns.message.Message) -> dns.message.Message:
             reply_msg = dns.message.make_response(
-                init_message,
+                init_msg,
                 recursion_available=True,
             )
             reply_msg.answer.extend(self.query.answer)
@@ -245,19 +237,19 @@ class BasicDNSProxy(asyncio.DatagramProtocol):
                 data = {
                     "question": [
                         {"name": name, "type": type}
-                        for name, type, _ in self.parse_section(self.query.question)
+                        for name, type, _ in parse_dns_section(self.query.question)
                     ],
                     "answer": [
                         {"name": name, "type": type, "resource_size": size}
-                        for name, type, size in self.parse_section(self.query.answer)
+                        for name, type, size in parse_dns_section(self.query.answer)
                     ],
                     "authority": [
                         {"name": name, "type": type, "resource_size": size}
-                        for name, type, size in self.parse_section(self.query.authority)
+                        for name, type, size in parse_dns_section(self.query.authority)
                     ],
                     "additional": [
                         {"name": name, "type": type, "resource_size": size}
-                        for name, type, size in self.parse_section(
+                        for name, type, size in parse_dns_section(
                             self.query.additional + [self.query.opt]
                             if self.query.opt
                             else self.query.additional
@@ -268,7 +260,26 @@ class BasicDNSProxy(asyncio.DatagramProtocol):
                 json.dump(data, output, indent=4)
 
 
+def parse_dns_section(rrsets: list[RRset]) -> list[tuple[str, str, int | None]]:
+    records: list[tuple[str, str, int | None]] = []
+    for rrset in rrsets:
+        name = rrset.name.to_unicode()
+        type = DNS_TYPES[rrset.rdtype]
+
+        if not rrset.processing_order():
+            records.append((name, type, None))
+        else:
+            for rdata in rrset.processing_order():
+                bytes = rdata.to_wire()
+                rlength = len(bytes) if bytes else 0
+                records.append((name, type, rlength))
+
+    return records
+
+
 async def main():
+    logging.basicConfig(filename="part2b.log", filemode="w", level=logging.INFO)
+
     parser = argparse.ArgumentParser()
     _ = parser.add_argument("--upstream", type=str, default=UPSTREAM_SERVER)
     _ = parser.add_argument("--debug", action="store_true")

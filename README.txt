@@ -15,7 +15,9 @@ pip install -r requirements.txt
 
 Run the following:
 
-``` python part1.py [--upstream=address] [--debug] ```
+```
+python part1.py [--upstream=address] [--debug]
+```
 
 Example output:
 ```
@@ -87,7 +89,9 @@ Other notes:
 
 Run the following:
 
-``` python part2.py [--upstream=address] [--debug] [--doh] ```
+```
+python part2.py [--upstream=address] [--debug] [--doh]
+```
 
 #### Options
 - `--doh`: Transmit upstream over HTTPS instead of UDP
@@ -129,8 +133,88 @@ See `part3.log` for logging info from the most recent script run.
 
 ### Design Description
 
-The same program as in part 2, except:
+The same program as in part 2(b), except:
 - `BasicDNSProxy` now stores its own persistent `requests.Session` object,
-  which is instantiated upon the first call to `datagram_received`.
+  which is instantiated upon the first call to `datagram_received` along with a
+  persistent `Accept:` header.
 - `handle_doh_query` now uses `logging.Logger` to broadcast how much time
   elapses between the start and end of each task
+
+### Measurements
+
+Measurements were taken as follows. I start the proxy:
+
+```
+python part3.py --doh
+```
+
+From a different terminal I fire off DNS lookups in the following order:
+
+```
+dig @127.0.0.1 -p 1053 example.com A
+dig @127.0.0.1 -p 1053 www.example.com CNAME
+dig @127.0.0.1 -p 1053 example.com A
+dig @127.0.0.1 -p 1053 example.com A
+dig @127.0.0.1 -p 1053 www.example.com CNAME
+dig @127.0.0.1 -p 1053 www.example.com CNAME
+```
+
+The file `part3.log` now contains the following:
+
+```
+INFO:__main__:(ID57077) QUERY [ Name: example.com., Type: A ]
+INFO:__main__:(ID57077) START Timer
+INFO:__main__:(ID57077) END Time elapsed: 51.199977ms
+INFO:__main__:(ID37033) QUERY [ Name: www.example.com., Type: CNAME ]
+INFO:__main__:(ID37033) START Timer
+INFO:__main__:(ID37033) END Time elapsed: 30.814066ms
+INFO:__main__:(ID31113) QUERY [ Name: example.com., Type: A ]
+INFO:__main__:(ID31113) START Timer
+INFO:__main__:(ID31113) END Time elapsed: 21.826936ms
+INFO:__main__:(ID63478) QUERY [ Name: example.com., Type: A ]
+INFO:__main__:(ID63478) START Timer
+INFO:__main__:(ID63478) END Time elapsed: 11.626827ms
+INFO:__main__:(ID27770) QUERY [ Name: www.example.com., Type: CNAME ]
+INFO:__main__:(ID27770) START Timer
+INFO:__main__:(ID27770) END Time elapsed: 20.792699ms
+INFO:__main__:(ID10328) QUERY [ Name: www.example.com., Type: CNAME ]
+INFO:__main__:(ID10328) START Timer
+INFO:__main__:(ID10328) END Time elapsed: 17.565559ms
+```
+
+The ID displayed in parentheses is the DNS query ID and tells us which
+coroutine each log belongs to.
+
+Let's do the same operations, this time using the near-identical script from
+part 2(b):
+
+```
+python part2b.py --doh
+```
+
+These are the contents of `part2b.log`:
+
+```
+INFO:__main__:(ID31606) QUERY [ Name: example.com., Type: A ]
+INFO:__main__:(ID31606) START Timer
+INFO:__main__:(ID31606) END Time elapsed: 63.378534ms
+INFO:__main__:(ID6955) QUERY [ Name: www.example.com., Type: CNAME ]
+INFO:__main__:(ID6955) START Timer
+INFO:__main__:(ID6955) END Time elapsed: 46.238061ms
+INFO:__main__:(ID53270) QUERY [ Name: example.com., Type: A ]
+INFO:__main__:(ID53270) START Timer
+INFO:__main__:(ID53270) END Time elapsed: 51.014552ms
+INFO:__main__:(ID6978) QUERY [ Name: example.com., Type: A ]
+INFO:__main__:(ID6978) START Timer
+INFO:__main__:(ID6978) END Time elapsed: 33.406025ms
+INFO:__main__:(ID44349) QUERY [ Name: www.example.com., Type: CNAME ]
+INFO:__main__:(ID44349) START Timer
+INFO:__main__:(ID44349) END Time elapsed: 61.347146ms
+INFO:__main__:(ID58037) QUERY [ Name: www.example.com., Type: CNAME ]
+INFO:__main__:(ID58037) START Timer
+INFO:__main__:(ID58037) END Time elapsed: 45.424713ms
+```
+
+Every request in part 2(b) takes substantially longer, presumably because the
+proxy had to establish a new connection to service every query. Later requests
+in part 3 are consistently fulfilled faster than the first request.
